@@ -1,0 +1,9 @@
+{$POKER_DOMAIN} {
+    @backend path / /app.js /voice.js /voice-relay.js /voice-capture.js /table-controls.js /api/room-policy /style.css /room-theme.css /health /ws /admin /admin.js /api/admin/*
+    handle @backend {
+        reverse_proxy poker:3000
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

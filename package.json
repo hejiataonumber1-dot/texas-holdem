@@ -1,0 +1,7 @@
+{
+  "name": "daogithub", "version": "0.1.0", "private": true,
+  "description": "手机和电脑一起玩的朋友虚拟筹码德州扑克",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node server/index.js", "test": "node --test test/*.test.js" },
+  "dependencies": { "ws": "^8.18.0" }
+}

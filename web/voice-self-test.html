@@ -1,0 +1,35 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>本地语音连接测试</title><link rel="stylesheet" href="/style.css"></head><body><main><h1 style="font-size:32px">本地语音连接测试</h1><p>使用两端服务器转发／WebRTC 与合成音频，仅检查音频数据，不开启真实麦克风，也不播放测试音。此页面仅在显式启用测试模式时提供。</p><button id="run-test" class="primary">运行语音连接测试</button><p id="test-status" role="status">尚未运行</p><ol id="results"></ol><div id="panels"></div><template id="voice-template"><section class="panel voice-panel"><h3></h3><span id="voice-status"></span><div class="voice-controls"><button id="voice-join">加入语音</button><button id="voice-mic" hidden>开麦</button><button id="voice-listen" hidden>关闭收听</button><button id="voice-leave" hidden>退出语音</button><button id="voice-play" hidden>播放声音</button></div><div id="voice-members"></div><div id="voice-audio" hidden></div></section></template></main><script src="/voice-relay.js"></script><script src="/voice.js"></script><script>
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+async function until(check,label){for(let i=0;i<120;i++){if(await check())return;await delay(150);}throw Error(label+' 超时');}
+function pass(text){const li=document.createElement('li');li.textContent='通过：'+text;document.getElementById('results').append(li);}
+async function received(v){if(v.transport==='relay')return v.relay.receivedBytes;let bytes=0;for(const p of v.connections.values())for(const report of (await p.pc.getStats()).values())if(report.type==='inbound-rtp'&&(report.kind==='audio'||report.mediaType==='audio'))bytes+=report.bytesReceived||0;return bytes;}
+document.getElementById('run-test').onclick=async()=>{
+ document.getElementById('run-test').disabled=true;document.getElementById('test-status').textContent='正在测试…';const clients=[];
+ try{
+  for(let i=0;i<2;i++){
+   const context=new AudioContext();await context.resume();const oscillator=context.createOscillator(),gain=context.createGain(),destination=context.createMediaStreamDestination();gain.gain.value=.1;oscillator.frequency.value=440+i*110;oscillator.connect(gain).connect(destination);oscillator.start();
+   const root=document.getElementById('voice-template').content.firstElementChild.cloneNode(true);root.querySelector('h3').textContent='测试端 '+(i+1);document.getElementById('panels').append(root);
+   const c={context,destination,state:null,ws:new WebSocket('ws://'+location.host+'/ws'),lobby:false};
+   c.voice=new VoiceChat({root,getState:()=>c.state,send:m=>c.ws.send(JSON.stringify(m)),notice:m=>{c.error=m;},getMedia:async()=>new MediaStream(destination.stream.getAudioTracks().map(t=>t.clone()))});clients.push(c);
+   c.ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='lobby')c.lobby=true;else if(m.type==='state'){c.state=m;c.voice.update(m.room.voice);}else if(m.type.startsWith('voice-'))c.voice.handle(m).catch(e=>{c.error=e.message;});else if(m.type==='error')c.error=m.message;};
+   await until(()=>c.ws.readyState===WebSocket.OPEN,'连接服务器');c.ws.send(JSON.stringify({type:'hello',name:'语音测试'+(i+1)}));await until(()=>c.lobby,'身份连接');
+  }
+  const [a,b]=clients;a.ws.send(JSON.stringify({type:'create',authorizationCode:'voice-test-create',password:'voice-preview'}));await until(()=>a.state||a.error,'创建房间');if(a.error)throw Error(a.error);b.ws.send(JSON.stringify({type:'join',code:a.state.room.code,password:'voice-preview',spectator:true}));await until(()=>b.state||b.error,'观众加入');if(b.error)throw Error(b.error);
+  a.voice.join();await until(()=>a.voice.joined,'端一加入语音');b.voice.join();await until(()=>b.voice.joined,'观众加入语音');
+  await until(()=>clients.every(c=>c.voice.transport==='relay'?c.voice.joined&&c.voice.roster.length===2:c.voice.connections.size===1&&[...c.voice.connections.values()].every(p=>p.pc.connectionState==='connected')),'WebRTC 双向连接');
+  for(const c of clients){if(c.voice.relay)c.voice.relay.output.disconnect();for(const p of c.voice.connections.values())p.audio.volume=0;}
+  if(clients.some(c=>c.voice.stream||c.voice.micOn))throw Error('默认只听状态错误');pass('两个端连接成功，观众可加入，默认不开麦');
+  const beforeB=await received(b.voice);await a.voice.microphone();if(!a.voice.micOn)throw Error(a.error||'开麦未成功');await until(async()=>await received(b.voice)>beforeB+500,'端一发送合成音频');pass('开麦后，另一端收到合成音频数据');
+  const beforeA=await received(a.voice);await b.voice.microphone();await until(async()=>await received(a.voice)>beforeA+500,'端二发送合成音频');pass('反向音频数据传输成功');const steady=await received(b.voice);await delay(1800);if(a.error||b.error||await received(b.voice)<steady+10000)throw Error(a.error||b.error||'持续传输中断');pass('持续音频传输跨多个限流窗口正常');
+  const pausedUntil=performance.now()+1800;while(performance.now()<pausedUntil){}
+  const resumed=await received(b.voice);await until(async()=>await received(b.voice)>resumed+5000,'主线程卡顿后恢复语音');await delay(400);if(a.error||b.error)throw Error(a.error||b.error);pass('短暂卡顿后丢弃积压语音，恢复传输且无频繁请求提示');
+  const tracks=a.voice.stream.getTracks();await a.voice.microphone();if(a.voice.micOn||a.voice.stream||tracks.some(t=>t.readyState!=='ended'))throw Error('闭麦未释放音频轨道');pass('闭麦停止并释放音频轨道');
+  a.voice.hearing();if(a.voice.listening||(a.voice.relay&&a.voice.relay.listening)||[...a.voice.connections.values()].some(p=>!p.audio.muted))throw Error('收听未关闭');pass('不开麦、不听声音，远端播放器全部静音');
+  a.voice.hearing();if(a.voice.micOn||!a.voice.listening)throw Error('只听模式错误');pass('恢复只听，不自动打开麦克风');
+  const again=await received(b.voice);await a.voice.microphone();await until(async()=>await received(b.voice)>again+500,'再次开麦');pass('再次开麦恢复音频传输');
+  a.voice.leave();b.voice.leave();if(clients.some(c=>c.voice.stream||c.voice.connections.size||c.voice.joined))throw Error('退出未完成清理');pass('退出语音后释放音频和全部连接');
+  document.getElementById('test-status').textContent='全部通过：双向音频数据传输与语音控制测试。真人声音、麦克风权限和跨网络连通性仍需两台设备试用。';
+ }catch(e){document.getElementById('test-status').textContent='测试失败：'+e.message;}
+ finally{for(const c of clients){c.voice.leave(false);if(c.ws.readyState===WebSocket.OPEN)c.ws.send(JSON.stringify({type:'leave'}));await c.context.close();}await delay(200);for(const c of clients)c.ws.close();document.getElementById('run-test').disabled=false;}
+};
+</script></body></html>
