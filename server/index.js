@@ -14,7 +14,8 @@ const {VoiceRooms}=require('./voice-room');
 const {VoiceAudioLimit}=require('./voice-audio-limit');
 const {SeatShuffleVote}=require('./seat-shuffle');
 const {RoomReactions}=require('./reactions');
-const admin=new AdminAccess({username:process.env.ADMIN_USERNAME,password:process.env.ADMIN_PASSWORD,file:path.resolve(process.env.ADMIN_DATA_FILE||path.join(__dirname,'../.data/admin-access.json')),initialCode:process.env.ROOM_CREATE_CODE});
+const admin=new AdminAccess({username:process.env.ADMIN_USERNAME,password:process.env.ADMIN_PASSWORD,file:path.resolve(process.env.ADMIN_DATA_FILE||path.join(__dirname,'../.data/admin-access.json'))});
+const ROOM_CREATE_CODE='3333';
 const {createWechatExchange,SessionStore,AuthError}=require('./wechat-auth');
 const store=new SessionStore(),rooms=new Map(),sessions=store.sessions;
 const reactions=new RoomReactions({sessions,send});
@@ -29,7 +30,7 @@ function json(res,status,data){res.writeHead(status,{'Content-Type':'application
 function readBody(req){return new Promise((resolve,reject)=>{let body='',bytes=0,failed=false;req.on('data',chunk=>{bytes+=chunk.length;if(bytes>4096){if(!failed){failed=true;reject(new AuthError('登录请求过大',413));}return;}body+=chunk;});req.on('end',()=>{if(failed)return;try{resolve(JSON.parse(body));}catch{reject(new AuthError('请求格式错误',400));}});req.on('error',()=>reject(new AuthError('请求中断',400)));});}
 const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
-  if(pathname==='/api/room-policy'&&req.method==='GET'){json(res,200,{requireCode:admin.requireCode});return;}
+  if(pathname==='/api/room-policy'&&req.method==='GET'){json(res,200,{requireCode:true});return;}
   if(pathname.startsWith('/api/admin/')){
     try{
       if(req.method!=='GET'&&req.method!=='POST')throw new AuthError('请求方法无效',405);
@@ -100,6 +101,13 @@ function schedule(room) {
 }
 function code() { let c; do {c=String(crypto.randomInt(100000,1000000));} while(rooms.has(c)); return c; }
 function name(value) { if(typeof value!=='string'||!value.trim()||value.trim().length>12) throw Error('请输入 1～12 字的昵称'); return value.trim().replace(/[\u0000-\u001f]/g,''); }
+function authorizeRoomCreation(value,ip){
+  const limit=admin.limit('fixed-create',ip);
+  const supplied=Buffer.from(typeof value==='string'?value:'');
+  const expected=Buffer.from(ROOM_CREATE_CODE);
+  if(supplied.length!==expected.length||!crypto.timingSafeEqual(supplied,expected)){limit.count++;throw Error('创建认证码不正确');}
+  limit.count=0;
+}
 wss.on('connection',(ws,req)=>{
   let session=null, windowStart=Date.now(), messages=0,voiceMessages=0;
   const audioLimit=new VoiceAudioLimit();
@@ -143,7 +151,7 @@ wss.on('connection',(ws,req)=>{
           if(rooms.size>=500) throw Error('房间数量已达上限');
           const protection=protectRoom(msg.password);
           const game=new Game({smallBlind:msg.smallBlind??5,bigBlind:msg.bigBlind??10,ante:0,initialChips:msg.initialChips});
-          admin.consume(msg.authorizationCode,req.socket.remoteAddress);
+          authorizeRoomCreation(msg.authorizationCode,req.socket.remoteAddress);
           const c=code();room={code:c,ownerId:session.id,game,timer:null,deadline:null,seatVote:null,seatVoteTimer:null,updated:Date.now(),protection,ledger:new TableLedger({initialChips:game.initialChips}),finished:false};rooms.set(c,room);
         } else {
           const now=Date.now();

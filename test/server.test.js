@@ -13,7 +13,7 @@ function client(url){
   const ws=new WebSocket(url),messages=[],waiters=[];
   ws.on('message',data=>{const m=JSON.parse(data);const i=waiters.findIndex(w=>w.predicate(m));if(i>=0){const w=waiters.splice(i,1)[0];clearTimeout(w.timer);w.resolve(m);}else messages.push(m);});
   const opened=new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
-  return {ws,opened,send:m=>ws.send(JSON.stringify(m.type==='voice-join'?{relaySupported:true,...m}:m.type==='create'?{authorizationCode:'test-create-code',smallBlind:10,bigBlind:20,...m}:m)),next(predicate){const i=messages.findIndex(predicate);if(i>=0)return Promise.resolve(messages.splice(i,1)[0]);return new Promise((resolve,reject)=>{const w={predicate,resolve,timer:setTimeout(()=>{const j=waiters.indexOf(w);if(j>=0)waiters.splice(j,1);reject(Error('等待服务端消息超时'));},3000)};waiters.push(w);});},clear(){messages.length=0;}};
+  return {ws,opened,send:m=>ws.send(JSON.stringify(m.type==='voice-join'?{relaySupported:true,...m}:m.type==='create'?{authorizationCode:'3333',smallBlind:10,bigBlind:20,...m}:m)),next(predicate){const i=messages.findIndex(predicate);if(i>=0)return Promise.resolve(messages.splice(i,1)[0]);return new Promise((resolve,reject)=>{const w={predicate,resolve,timer:setTimeout(()=>{const j=waiters.indexOf(w);if(j>=0)waiters.splice(j,1);reject(Error('等待服务端消息超时'));},3000)};waiters.push(w);});},clear(){messages.length=0;}};
 }
 test('实时语音信令仅在同一房间已加入的成员间转发，静音与断线清理',async t=>{
   const port=await freePort(),child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{env:{...testEnvironment(),PORT:String(port),ALLOW_GUEST:'true',NODE_ENV:'production',VOICE_TEST_MODE:'true'},stdio:['ignore','pipe','pipe']});
@@ -70,66 +70,18 @@ test('语音连续发送和网络短突发不刷屏，超量受限后可恢复�
   a.send({type:'voice-leave'});await a.next(m=>m.type==='voice-left');await b.next(m=>m.type==='voice-roster'&&m.peers.length===1);assert.deepEqual(errors,[]);
 });
 
-test('管理员权限、授权码服务端验证、更换停用、加入无需授权码',async t=>{
-  const port=await freePort(),child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{env:{...testEnvironment(),PORT:String(port),ALLOW_GUEST:'true',NODE_ENV:'production'},stdio:['ignore','pipe','pipe']});
+test('创建房间固定校验后端认证码 3333，加入房间无需认证码',async t=>{
+  const port=await freePort(),child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{env:{...testEnvironment(),ROOM_CREATE_CODE:'other-environment-code',PORT:String(port),ALLOW_GUEST:'true',NODE_ENV:'production'},stdio:['ignore','pipe','pipe']});
   const clients=[];t.after(()=>{clients.forEach(c=>c.ws.terminate());child.kill();});
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('启动超时')),5000);child.stdout.once('data',()=>{clearTimeout(timer);resolve();});child.once('error',reject);});
   const base=`http://127.0.0.1:${port}`;
-  async function api(route,body,cookie,origin){const r=await fetch(base+'/api/admin/'+route,{method:body===undefined?'GET':'POST',headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...(cookie?{Cookie:cookie}:{}),...(origin?{Origin:origin}:{})},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')};}
-  assert.equal((await fetch(base+'/api/room-policy').then(r=>r.json())).requireCode,true);assert.equal((await api('policy',{requireCode:false})).status,401);
-  assert.equal((await api('status')).status,401);assert.equal((await api('code',{code:'attacker-code'})).status,401);
-  const login=await api('login',{username:'test-admin',password:'test-password-42'});assert.equal(login.status,200);assert.match(login.cookie,/HttpOnly/);assert.match(login.cookie,/SameSite=Strict/);assert.match(login.cookie,/Secure/);const cookie=login.cookie.split(';')[0];
-  assert.equal((await api('code',{code:'cross-site-code'},cookie,'https://other.example')).status,403);
-  const set=await api('code',{code:'private-admin-code',days:1,maxUses:2},cookie);assert.equal(set.status,200);assert.equal(set.data.remaining,2);
-  const status=await api('status',undefined,cookie);assert.equal(JSON.stringify(status.data).includes('private-admin-code'),false);assert.equal('hash' in status.data,false);
-  async function loginPeer(){const c=client(`ws://127.0.0.1:${port}/ws`);clients.push(c);await c.opened;c.send({type:'hello',name:'授权测试'+clients.length});await c.next(m=>m.type==='welcome');await c.next(m=>m.type==='lobby');return c;}
-  const a=await loginPeer(),b=await loginPeer();
-  for(const authorizationCode of ['', 'wrong-create-code']){a.send({type:'create',initialChips:500,authorizationCode});assert.match((await a.next(m=>m.type==='error')).message,/授权码/);}
-  a.send({type:'create',initialChips:500,authorizationCode:'private-admin-code',password:'room-password'});let s=await a.next(m=>m.type==='state');const code=s.room.code;assert.equal(JSON.stringify(s).includes('private-admin-code'),false);
-  b.send({type:'join',code,password:'room-password',authorizationCode:''});await b.next(m=>m.type==='state');assert.equal((await api('status',undefined,cookie)).data.used,1);
-  await api('code',{code:'replacement-code',maxUses:1},cookie);b.send({type:'leave'});await b.next(m=>m.type==='lobby');
-  b.send({type:'create',initialChips:500,authorizationCode:'private-admin-code'});assert.match((await b.next(m=>m.type==='error')).message,/授权码/);
-  b.send({type:'create',initialChips:500,authorizationCode:'replacement-code'});await b.next(m=>m.type==='state');b.send({type:'leave'});await b.next(m=>m.type==='lobby');b.send({type:'create',initialChips:500,authorizationCode:'replacement-code'});assert.match((await b.next(m=>m.type==='error')).message,/授权码/);
-  await api('code',{code:'enabled-again-code'},cookie);await api('code',{enabled:false},cookie);b.send({type:'create',initialChips:500,authorizationCode:'enabled-again-code'});assert.match((await b.next(m=>m.type==='error')).message,/授权码/);
-  b.send({type:'join',code,password:'room-password'});await b.next(m=>m.type==='state');
-  assert.equal((await api('policy',{requireCode:false},cookie)).status,200);assert.equal((await fetch(base+'/api/room-policy').then(r=>r.json())).requireCode,false);
-  const free=await loginPeer();free.send({type:'create',initialChips:500,authorizationCode:'',smallBlind:5,bigBlind:10});let opened=await free.next(m=>m.type==='state');assert.equal(opened.game.ante,0);assert.equal(opened.game.smallBlind,5);
-  free.send({type:'blinds',smallBlind:10,bigBlind:25});opened=await free.next(m=>m.type==='state'&&m.game.bigBlind===25);assert.equal(opened.game.ante,0);
-  free.send({type:'blinds',smallBlind:30,bigBlind:20});assert.match((await free.next(m=>m.type==='error')).message,/盲注/);
-  b.send({type:'blinds',smallBlind:5,bigBlind:10});assert.match((await b.next(m=>m.type==='error')).message,/房主/);
-  await api('policy',{requireCode:true},cookie);free.send({type:'leave'});await free.next(m=>m.type==='lobby');free.send({type:'create',initialChips:500,authorizationCode:''});assert.match((await free.next(m=>m.type==='error')).message,/授权码/);
-  assert.equal((await api('logout',{},cookie)).status,200);assert.equal((await api('code',{code:'must-not-work'},cookie)).status,401);
-});
-test('未配置初始授权码时默认自由建房，管理员显式开关仍保留权限和建房校验',async t=>{
-  // Explicitly clear ROOM_CREATE_CODE so the developer's .env cannot enable code mode.
-  const port=await freePort(),child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{env:{...testEnvironment(),ROOM_CREATE_CODE:'',PORT:String(port),ALLOW_GUEST:'true',NODE_ENV:'production'},stdio:['ignore','pipe','pipe']});
-  const clients=[];t.after(()=>{clients.forEach(c=>c.ws.terminate());child.kill();});
-  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('启动超时')),5000);child.stdout.once('data',()=>{clearTimeout(timer);resolve();});child.once('error',reject);});
-  const base=`http://127.0.0.1:${port}`;
-  async function policy(){return (await fetch(base+'/api/room-policy')).json();}
-  async function api(route,body,cookie,origin){const r=await fetch(base+'/api/admin/'+route,{method:'POST',headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{}),...(origin?{Origin:origin}:{})},body:JSON.stringify(body)});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')};}
+  assert.deepEqual(await fetch(base+'/api/room-policy').then(r=>r.json()),{requireCode:true});
   async function loginPeer(name){const c=client(`ws://127.0.0.1:${port}/ws`);clients.push(c);await c.opened;c.send({type:'hello',name});await c.next(m=>m.type==='welcome');await c.next(m=>m.type==='lobby');return c;}
-  assert.deepEqual(await policy(),{requireCode:false});
-  assert.equal((await api('policy',{requireCode:true})).status,401);assert.equal((await policy()).requireCode,false);
-  const a=await loginPeer('自由创建房主');
-  a.send({type:'create',initialChips:500,authorizationCode:'',password:'12'});assert.match((await a.next(m=>m.type==='error')).message,/4～32/);
-  a.send({type:'create',initialChips:500,authorizationCode:'',smallBlind:30,bigBlind:20});assert.match((await a.next(m=>m.type==='error')).message,/盲注/);
-  a.send({type:'create',initialChips:500,authorizationCode:'',password:'free-table-password',smallBlind:5,bigBlind:10});const first=await a.next(m=>m.type==='state');assert.equal(first.room.locked,true);assert.equal(first.game.smallBlind,5);assert.equal(first.game.ante,0);
-  const b=await loginPeer('自由创建朋友');b.send({type:'join',code:first.room.code,password:''});assert.match((await b.next(m=>m.type==='error')).message,/密码不正确/);b.send({type:'join',code:first.room.code,password:'free-table-password'});await b.next(m=>m.type==='state');
-  a.send({type:'create',initialChips:500,authorizationCode:''});assert.match((await a.next(m=>m.type==='error')).message,/已在房间/);
-  a.send({type:'leave'});await a.next(m=>m.type==='lobby');a.clear();
-  const logged=await api('login',{username:'test-admin',password:'test-password-42'});assert.equal(logged.status,200);const cookie=logged.cookie.split(';')[0];
-  assert.equal((await api('policy',{requireCode:true},cookie,'https://other.example')).status,403);
-  assert.equal((await api('policy',{requireCode:'true'},cookie)).status,400);assert.equal((await policy()).requireCode,false);
-  const set=await api('code',{code:'explicit-policy-code'},cookie);assert.equal(set.status,200);assert.equal(set.data.requireCode,false);assert.equal((await policy()).requireCode,false);
-  a.send({type:'create',initialChips:500,authorizationCode:''});await a.next(m=>m.type==='state');a.send({type:'leave'});await a.next(m=>m.type==='lobby');
-  assert.equal((await api('policy',{requireCode:true},cookie)).status,200);assert.equal((await policy()).requireCode,true);
-  for(const authorizationCode of ['', 'incorrect-code']){a.send({type:'create',initialChips:500,authorizationCode});assert.match((await a.next(m=>m.type==='error')).message,/授权码/);}
-  a.send({type:'create',initialChips:500,authorizationCode:'explicit-policy-code'});await a.next(m=>m.type==='state');a.send({type:'leave'});await a.next(m=>m.type==='lobby');
-  assert.equal((await api('policy',{requireCode:false},cookie)).status,200);assert.equal((await policy()).requireCode,false);
-  a.send({type:'create',initialChips:500,authorizationCode:'',smallBlind:30,bigBlind:20});assert.match((await a.next(m=>m.type==='error')).message,/盲注/);
-  a.send({type:'create',initialChips:500,authorizationCode:'',password:'12'});assert.match((await a.next(m=>m.type==='error')).message,/4～32/);
-  a.send({type:'create',initialChips:500,authorizationCode:'',smallBlind:5,bigBlind:10});assert.equal((await a.next(m=>m.type==='state')).game.bigBlind,10);
+  const owner=await loginPeer('固定码房主'),friend=await loginPeer('固定码朋友');
+  for(const authorizationCode of ['', '1111', 'other-environment-code']){owner.send({type:'create',initialChips:500,authorizationCode});assert.match((await owner.next(m=>m.type==='error')).message,/认证码/);}
+  owner.send({type:'create',initialChips:500,authorizationCode:'3333',password:'room-password'});const state=await owner.next(m=>m.type==='state');
+  assert.equal(JSON.stringify(state).includes('3333'),false);
+  friend.send({type:'join',code:state.room.code,password:'room-password'});await friend.next(m=>m.type==='state');
 });
 test('观战不发底牌，离座与重新入座保留记录，牌局中预约离座',async t=>{
   const port=await freePort(),child=spawn(process.execPath,[path.resolve(__dirname,'../server/index.js')],{env:{...testEnvironment(),PORT:String(port),ALLOW_GUEST:'true'},stdio:['ignore','pipe','pipe']});

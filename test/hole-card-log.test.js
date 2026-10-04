@@ -20,7 +20,7 @@ async function loggingServer(t){
   async function login(name){
     const ws=new WebSocket(`ws://127.0.0.1:${port}/ws`),messages=[],waiters=[];
     ws.on('message',data=>{const message=JSON.parse(data),index=waiters.findIndex(waiter=>waiter.predicate(message));if(index<0)messages.push(message);else{const waiter=waiters.splice(index,1)[0];clearTimeout(waiter.timer);waiter.resolve(message);}});
-    const peer={ws,send:message=>ws.send(JSON.stringify(message)),next(predicate){const index=messages.findIndex(predicate);if(index>=0)return Promise.resolve(messages.splice(index,1)[0]);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(Error('等待消息超时'));},3000)};waiters.push(waiter);});}};
+    const peer={ws,send:message=>ws.send(JSON.stringify(message.type==='create'?{authorizationCode:'3333',...message}:message)),next(predicate){const index=messages.findIndex(predicate);if(index>=0)return Promise.resolve(messages.splice(index,1)[0]);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(Error('等待消息超时'));},3000)};waiters.push(waiter);});}};
     peers.push(peer);await new Promise((resolve,reject)=>{ws.once('open',resolve);ws.once('error',reject);});
     peer.send({type:'hello',name});await peer.next(message=>message.type==='welcome');await peer.next(message=>message.type==='lobby');return peer;
   }
