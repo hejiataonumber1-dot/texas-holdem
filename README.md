@@ -1,4 +1,4 @@
-# 好友牌局 · 网页多人德州扑克
+# Texas Hold’em
 
 手机和电脑打开同一个网址，输入昵称、设置房间密码即可创建私人房间，或输入六位房间号和密码加入。默认无需创建授权码；只有管理员主动开启授权码模式后，创建房间才需要授权码。2～9 人，免费虚拟筹码，房主开局。无需微信账号。
 
@@ -19,7 +19,7 @@ npm start
 
 GitHub 用于保存代码，GitHub Pages 只提供静态托管，不能运行多人房间服务。本项目将网页和 WebSocket 服务一起部署到 Render，部署成功后分享 HTTPS 网址即可玩，不需要单独配置前端地址。
 
-[在 Render 部署](https://render.com/deploy?repo=https://github.com/NoRollPlz/daogithub)
+[在 Render 部署](https://render.com/deploy?repo=https://github.com/NoRollPlz/texas-holdem)
 
 1. 把项目代码上传到自己的 GitHub 仓库，确认仓库根目录有 package.json 和 render.yaml。
 2. 登录 Render，通过上面的部署按钮或 New → Blueprint 选择仓库。
@@ -133,5 +133,3 @@ npm test
 输入框表示**本轮下注目标总额**：自己本轮已下 10、上家到 30，输入框显示 30，确认按钮提示补 20，服务端只扣 20。翻牌／转牌／河牌后的新下注轮次从 0 开始，可以过牌。此前轮次的投入留在底池，不加入当前目标。每手开局只由大小盲位缴纳盲注，其他玩家跟注时才投入筹码。最低合法加注仍按上一笔有效加注增量计算。
 
 快捷按钮按面额累加，不超过全部筹码或低于需跟注金额；若草稿落在无效的加注区间，确认按钮暂时不可用，继续调整金额即可。提交时遵守最小加注和短额 All-in 规则；输入 0 只能在无需跟注时过牌。
-
-This version does not log player hole cards or community cards.
